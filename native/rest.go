@@ -2,6 +2,7 @@ package main
 
 import (
  "encoding/base64"
+ "encoding/json"
  "net/url"
  "sort"
  "strconv"
@@ -38,7 +39,7 @@ func rest(method,path string,b M,q url.Values)Reply{
  }
  if sub=="labels"{if method=="POST"{name:=text(b,"name");if name==""{fail(422,"name is required")};n:=id();l:=M{"id":n,"node_id":globalID("Label",n),"name":name,"color":defaultText(text(b,"color"),"ededed"),"description":text(b,"description"),"default":false};r.Labels[name]=l;return created(l)};out:=[]M{};for _,v:=range r.Labels{out=append(out,v)};return ok(out)}
  if sub=="issues"{
-  if len(parts)==4{if method=="POST"{issue:=createIssue(r,b);issue.Cached=encode(issue.Data);return Reply{Status:201,Raw:issue.Cached}};list:=listIssues(r,q.Get("state"),q.Get("direction"));per,page:=num(q.Get("per_page")),num(q.Get("page"));if per<1{per=30};if page<1{page=1};start,end:=(page-1)*per,page*per;if start>len(list){start=len(list)};if end>len(list){end=len(list)};out:=make([]M,0,end-start);for _,v:=range list[start:end]{out=append(out,v.Data)};return ok(out)}
+  if len(parts)==4{if method=="POST"{issue:=createIssue(r,b);issue.Cached=encodeCreatedIssue(issue.Data);return Reply{Status:201,Raw:issue.Cached}};list:=listIssues(r,q.Get("state"),q.Get("direction"));per,page:=num(q.Get("per_page")),num(q.Get("page"));if per<1{per=30};if page<1{page=1};start,end:=(page-1)*per,page*per;if start>len(list){start=len(list)};if end>len(list){end=len(list)};out:=make([]M,0,end-start);for _,v:=range list[start:end]{out=append(out,v.Data)};return ok(out)}
   number:=num(parts[4]);issue:=r.Issues[number];if issue==nil{issue=r.Pulls[number]};if issue==nil{fail(404,"Issue not found")}
   if len(parts)>5&&parts[5]=="comments"{if method=="POST"{return created(addComment(r,issue,b))};return ok(issue.Comments)}
   if method=="PATCH"{for _,k:=range []string{"title","body","state"}{if v,yes:=b[k];yes{issue.Data[k]=v}};issue.Data["updated_at"]=stamp();if text(issue.Data,"state")=="closed"{issue.Data["closed_at"]=stamp()};issue.Cached=nil;return resourceReply(issue)}
@@ -47,3 +48,25 @@ func rest(method,path string,b M,q url.Values)Reply{
  if sub=="pulls"{if len(parts)==4{if method=="POST"{return created(createPull(r,b).Data)};state:=defaultText(q.Get("state"),"open");out:=[]M{};for _,p:=range r.Pulls{if state=="all"||text(p.Data,"state")==state{out=append(out,p.Data)}};sort.Slice(out,func(i,j int)bool{return num(out[i]["number"])<num(out[j]["number"])});return ok(out)};p:=r.Pulls[num(parts[4])];if p==nil{fail(404,"Pull request not found")};if len(parts)>5{if parts[5]=="files"{return ok(pullFiles(r,p))};if parts[5]=="merge"&&method=="PUT"{return ok(mergePull(r,p,b))}};if method=="GET"{return resourceReply(p)}}
  fail(404,"Not Found");return Reply{}
 }
+
+// Issue creation uses a typed wire value, avoiding map-key sorting and reflection
+// for the frequently serialized fields. The mutable store remains shared by APIs.
+func encodeCreatedIssue(v M) []byte {
+ type wireIssue struct {
+  ID int `json:"id"`
+  NodeID string `json:"node_id"`
+  Number int `json:"number"`
+  Title string `json:"title"`
+  Body string `json:"body"`
+  State string `json:"state"`
+  Labels []any `json:"labels"`
+  User json.RawMessage `json:"user"`
+  Comments int `json:"comments"`
+  Created string `json:"created_at"`
+  Updated string `json:"updated_at"`
+  Closed any `json:"closed_at"`
+  HTMLURL string `json:"html_url"`
+ }
+ return encode(wireIssue{num(v["id"]),text(v,"node_id"),num(v["number"]),text(v,"title"),text(v,"body"),text(v,"state"),arr(v["labels"]),encodedViewer,num(v["comments"]),text(v,"created_at"),text(v,"updated_at"),v["closed_at"],text(v,"html_url")})
+}
+var encodedViewer json.RawMessage

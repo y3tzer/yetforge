@@ -50,7 +50,7 @@ The source in `native/` implements a shared store, immutable Git objects, recurs
 The committed executable is built from this repository's source and Go's standard library:
 
 ```sh
-(cd native && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w -buildid=' -o ../yetforge .)
+(cd native && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false -trimpath -ldflags='-s -w -buildid=' -o ../yetforge .)
 ```
 
 The local full grader passed all three published practice instances and their deterministic replays with 120/120 feature checks. Production performance is measured independently and can differ substantially from local results.

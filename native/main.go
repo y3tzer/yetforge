@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"runtime"
+ "runtime/debug"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -293,7 +294,7 @@ func rawWrite(fd int, b []byte) (int, syscall.Errno) {
 	n, _, e := syscall.RawSyscall(syscall.SYS_WRITE, uintptr(fd), uintptr(unsafe.Pointer(&b[0])), uintptr(len(b)))
 	return int(n), e
 }
-func serve(listener int, stop *atomic.Bool) error {
+func serve(listener int, stop *atomic.Bool, pollDone func() bool) error {
 	ep, e := syscall.EpollCreate1(syscall.EPOLL_CLOEXEC)
 	if e != nil {
 		return e
@@ -315,12 +316,18 @@ func serve(listener int, stop *atomic.Bool) error {
 		syscall.Close(fd)
 		delete(connections, fd)
 	}
-	for !stop.Load() {
-		n, err := syscall.EpollWait(ep, events, 100)
+	nextPoll := time.Now().Add(500 * time.Millisecond)
+ for !stop.Load() {
+  // Keep the reactor on its OS thread: no scheduler handoff for each network wait.
+  if pollDone != nil && time.Now().After(nextPoll) {
+   if pollDone() { return nil }
+   nextPoll = time.Now().Add(500 * time.Millisecond)
+  }
+  n, err := rawEpollWait(ep, events, 100)
 		if err == syscall.EINTR {
 			continue
 		}
-		if err != nil {
+		if err != 0 {
 			return err
 		}
 		for i := 0; i < n; i++ {
@@ -438,52 +445,49 @@ func serve(listener int, stop *atomic.Bool) error {
 	}
 	return nil
 }
-func lifecycle(port int, stop *atomic.Bool) {
-	env := strings.TrimRight(os.Getenv("MAKEFUN_ENV_URL"), "/")
-	if env == "" {
-		return
-	}
-	client := &http.Client{Timeout: 30 * time.Second}
-	body := []byte(`{"port":` + strconv.Itoa(port) + `}`)
-	for attempt := 0; ; attempt++ {
-		res, e := client.Post(env+"/register", "application/json", bytes.NewReader(body))
-		if e == nil {
-			io.Copy(io.Discard, res.Body)
-			res.Body.Close()
-			if res.StatusCode == 200 || res.StatusCode == 409 {
-				break
-			}
-			if res.StatusCode == 400 || res.StatusCode == 405 {
-				fmt.Fprintln(os.Stderr, "register failed", res.StatusCode)
-				os.Exit(1)
-			}
-		}
-		time.Sleep(time.Duration(250<<min(attempt, 3)) * time.Millisecond)
-	}
-	for {
-		res, e := client.Get(env + "/done")
-		if e == nil {
-			var result struct {
-				Done bool `json:"done"`
-			}
-			json.NewDecoder(res.Body).Decode(&result)
-			res.Body.Close()
-			if result.Done {
-				stop.Store(true)
-				return
-			}
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
+// rawEpollWait keeps the Go scheduler out of the reactor's socket-ready path.
+func rawEpollWait(ep int, events []syscall.EpollEvent, timeout int) (int, syscall.Errno) {
+ n, _, err := syscall.RawSyscall6(syscall.SYS_EPOLL_WAIT, uintptr(ep), uintptr(unsafe.Pointer(&events[0])), uintptr(len(events)), uintptr(timeout), 0, 0)
+ return int(n), err
 }
+
+// Registration finishes before the reactor starts. Completion checks are short,
+// synchronous requests between reactor iterations, so there is one state owner.
+func prepareLifecycle(port int) func() bool {
+ env := strings.TrimRight(os.Getenv("MAKEFUN_ENV_URL"), "/")
+ if env == "" { return nil }
+ client := &http.Client{Timeout: 3 * time.Second}
+ body := []byte(`{"port":` + strconv.Itoa(port) + `}`)
+ for attempt := 0; ; attempt++ {
+  res, err := client.Post(env+"/register", "application/json", bytes.NewReader(body))
+  if err == nil {
+   io.Copy(io.Discard, res.Body); res.Body.Close()
+   if res.StatusCode == 200 || res.StatusCode == 409 { break }
+   if res.StatusCode == 400 || res.StatusCode == 405 { panic("registration rejected") }
+  }
+  time.Sleep(time.Duration(250 << min(attempt, 3)) * time.Millisecond)
+ }
+ return func() bool {
+  res, err := client.Get(env+"/done")
+  if err != nil { return false }
+  defer res.Body.Close()
+  var result struct { Done bool `json:"done"` }
+  if json.NewDecoder(res.Body).Decode(&result) != nil { return false }
+  return result.Done
+ }
+}
+
 func main() {
 	runtime.GOMAXPROCS(1)
+ debug.SetGCPercent(300)
+ debug.SetMemoryLimit(384 << 20)
 	runtime.LockOSThread()
 	if s := os.Getenv("MAKEFUN_FORGE_LOGIN"); s != "" {
 		login = s
 		user["login"] = s
 		user["html_url"] = "https://forge.local/" + s
 	}
+	encodedViewer = encode(user)
 	listener, e := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM|syscall.SOCK_NONBLOCK|syscall.SOCK_CLOEXEC, syscall.IPPROTO_TCP)
 	if e != nil {
 		panic(e)
@@ -504,8 +508,8 @@ func main() {
 	port = addr.(*syscall.SockaddrInet4).Port
 	fmt.Println("[entry] listening on port", port)
 	var stop atomic.Bool
-	go lifecycle(port, &stop)
-	if e = serve(listener, &stop); e != nil {
+	pollDone := prepareLifecycle(port)
+	if e = serve(listener, &stop, pollDone); e != nil {
 		panic(e)
 	}
 }
