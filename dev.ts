@@ -1,2 +1,2 @@
-import { createApp } from './app.ts';
-const server=createApp();server.listen(Number(process.env.PORT)||0,'127.0.0.1',()=>console.log((server.address() as any).port));
+// The same engine runs locally; PORT chooses the listener and no env URL is needed.
+import './main.ts';

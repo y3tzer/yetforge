@@ -4,7 +4,7 @@
 [![rank](https://make.fun/badge/github-core-clone-01/y3tzer/yetforge/rank.svg)](https://make.fun/bounty/github-core-clone-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=github-core-clone-01)
 [![reward](https://make.fun/badge/github-core-clone-01/y3tzer/yetforge/reward.svg)](https://make.fun/bounty/github-core-clone-01?utm_source=github&utm_medium=readme&utm_campaign=github-core-clone-01)
 
-YetForge is a standalone GitHub-compatible git forge, implemented in TypeScript with the Node.js 22 standard library. Git smart HTTP, REST v3, GraphQL v4, and MCP operate on the same in-memory repository and object store.
+YetForge is a standalone GitHub-compatible git forge, implemented as a statically linked Go engine with a Node.js 22 launcher. Git smart HTTP, REST v3, GraphQL v4, and MCP operate on the same in-memory repository and object store.
 
 ## Run it
 
@@ -14,7 +14,7 @@ For a local server:
 MAKEFUN_SHOP_TOKEN=choose-a-local-token PORT=3000 node dev.ts
 ```
 
-The local server binds to loopback. Requests use `Authorization: Bearer <your token>`; `/healthz` is public. Set `MAKEFUN_FORGE_LOGIN` to choose the authenticated user's login (default: `adaiversen`, the bounty's documented viewer).
+The native server listens on the configured port. Requests use `Authorization: Bearer <your token>`; `/healthz` is public. Set `MAKEFUN_FORGE_LOGIN` to choose the authenticated user's login (default: `adaiversen`, the bounty's documented viewer).
 
 For the make.fun trial lifecycle:
 
@@ -22,7 +22,7 @@ For the make.fun trial lifecycle:
 MAKEFUN_ENV_URL=http://suite:8080 MAKEFUN_SHOP_TOKEN=trial-token node main.ts
 ```
 
-The entry binds an ephemeral port, registers it with the suite, serves requests until `/done` returns `{"done":true}`, then exits. It requires no npm installation, external network, database, git executable, native addon, or model call.
+The entry binds an ephemeral port, registers it with the suite, serves requests until `/done` returns `{"done":true}`, then exits. The Node launcher replaces itself with the committed Linux amd64 executable using `process.execve`, so the forge runs as one process. It requires no npm installation, external network, database, git executable, native addon, or model call.
 
 ## Interfaces
 
@@ -45,11 +45,19 @@ The supplied suite passed **120/120 conformance checks** during development: Git
 
 ## Implementation and scope
 
-`store.ts` owns repositories and resources, Git objects, recursive trees, commit graphs, and three-way file merges. `git.ts` handles packet lines, pack ingestion, graph traversal, and wire framing. `graphql.ts` contains a small parser and typed resolver. `mcp.ts` maps tools to the shared REST operations, while `app.ts` provides HTTP routing and authentication. `main.ts` retains the kit's trial lifecycle.
+The source in `native/` implements a shared store, immutable Git objects, recursive trees, commit graphs, three-way file merges, REST, a GraphQL parser and resolver, and MCP tools. A Linux epoll event loop handles HTTP/1.1 keep-alive connections, pipelining, request framing, partial writes, and backpressure. The engine caches serialized issue representations and complete fetch responses, invalidates them on mutations, and reuses compression state. The tiny `main.ts` launcher transfers control to the engine, which owns the trial lifecycle.
+
+The committed executable is built from this repository's source and Go's standard library:
+
+```sh
+(cd native && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w -buildid=' -o ../yetforge .)
+```
+
+The local full grader passed all three published practice instances and their deterministic replays with 120/120 feature checks. Production performance is measured independently and can differ substantially from local results.
 
 The store is ephemeral and intended for the bounty's isolated trial. State is lost when the process stops. This is a focused compatibility implementation, not a complete hosted GitHub replacement: there is no web UI, persistent storage, account administration, Actions, SSH transport, or full GitHub schema. Merge conflict detection operates at file granularity. Pack output uses complete objects with cached zlib compression; pack input supports offset and reference deltas.
 
-MIT licensed. The trial lifecycle and initial package metadata originate in the make.fun starter; the forge implementation was written for this entry.
+MIT licensed. The original development started from the make.fun Node starter. The current native engine and launcher were written for this entry.
 
 ---
 
