@@ -1,0 +1,13 @@
+{
+  "name": "yetforge",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A standalone GitHub-compatible git forge with smart HTTP, REST, GraphQL and MCP",
+  "license": "MIT",
+  "engines": { "node": ">=22.18" },
+  "scripts": {
+    "start": "node main.ts",
+    "dev": "node dev.ts"
+  }
+}
